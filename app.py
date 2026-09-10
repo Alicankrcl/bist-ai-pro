@@ -6,8 +6,7 @@ import math
 from datetime import datetime
 from dotenv import load_dotenv
 import os
-from google import genai
-from google.genai import types
+from groq import Groq
 
 # ── SAYFA ──────────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -19,15 +18,15 @@ st.set_page_config(
 
 # ── ORTAM ──────────────────────────────────────────────────────────────────────
 load_dotenv()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 ALLOWED_USERS = {
     os.environ.get("USER1_ID", "Alican"): os.environ.get("USER1_PW", "1234"),
     os.environ.get("USER2_ID", "Halil"): os.environ.get("USER2_PW", "1234")
 }
 
-if not GEMINI_API_KEY:
-    st.error("GEMINI_API_KEY bulunamadi. .env dosyasini kontrol edin.")
+if not GROQ_API_KEY:
+    st.error("GROQ_API_KEY bulunamadi. .env dosyasini kontrol edin.")
     st.stop()
 
 # ── GÜVENLİK (ÇOKLU KULLANICI) ─────────────────────────────────────────────────
@@ -56,8 +55,7 @@ if not st.session_state.authenticated:
             else:
                 st.error("❌ Hatalı kullanıcı adı veya şifre!")
     st.stop() # Doğru giriş yapılana kadar alttaki hiçbir kod çalışmaz
-
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
 
 # ── VERİTABANI ─────────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -442,26 +440,19 @@ with tab1:
                             "Asla kesin kazanc garantisi verme. Yanitinin EN SONUNA kucuk puntolarla (Markdown caption: <br><br> *Yasal Uyari: Burada yer alan stratejiler yapay zeka tarafindan algoritmik olarak uretilmis olup, yatirim danismanligi kapsaminda degildir.*) ekle."
                         )
 
-                        history = []
+                        # Groq Mesaj Geçmişi Formatı
+                        groq_messages = [{"role": "system", "content": sys_prompt}]
                         for m in st.session_state.messages[-6:]:
-                            if m["role"] == "user" and m["content"] == prompt:
-                                continue
-                            history.append(
-                                types.Content(
-                                    role=m["role"],
-                                    parts=[types.Part.from_text(text=m["content"])]
-                                )
-                            )
+                            role = "assistant" if m["role"] == "model" else "user"
+                            groq_messages.append({"role": role, "content": m["content"]})
 
-                        chat_s = client.chats.create(
-                            model="gemini-3.6-flash",
-                            config=types.GenerateContentConfig(
-                                system_instruction=sys_prompt,
-                                temperature=0.2, # Daha stabil matematiksel yanitlar icin isi dusuruldu
-                            ),
-                            history=history
+                        response = client.chat.completions.create(
+                            model="openai/gpt-oss-120b",
+                            messages=groq_messages,
+                            temperature=0.2,
+                            max_tokens=1024
                         )
-                        reply = chat_s.send_message(prompt).text
+                        reply = response.choices[0].message.content
                         st.markdown(reply)
                         st.session_state.messages.append({"role": "model", "content": reply})
                         save_msg("model", reply)
