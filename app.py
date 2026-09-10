@@ -42,7 +42,12 @@ if not st.session_state.authenticated:
         </style>
     """, unsafe_allow_html=True)
     
-    st.markdown("<h2 style='text-align: center; margin-top: 150px;'>🔒 AI Quant Pro Güvenli Giriş</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; margin-top: 120px;'>🔒 AI Quant Pro Güvenli Giriş</h2>", unsafe_allow_html=True)
+    st.markdown("""
+        <div style='background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; border-radius: 8px; padding: 12px; margin: 15px auto; max-width: 500px; text-align: center; font-size: 11px; color: #fca5a5;'>
+            ⚠️ <b>ÖNEMLİ YASAL UYARI (SPK MEVZUATI):</b> Bu platformda sunulan içerik, grafik ve yapay zeka analizleri <b>kesinlikle yatırım tavsiyesi (YTD) niteliği taşımaz.</b> Tamamen deneysel ve eğitim amaçlı algoritmik bir çalışmadır.
+        </div>
+    """, unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         user_input = st.text_input("Kullanıcı Adı:")
@@ -331,6 +336,9 @@ st.markdown("""
         <h1>BIST Pro Terminal & AI Trader</h1>
         <span class="app-badge">LIVE ALGORITHM</span>
     </div>
+    <div style="background: rgba(239, 68, 68, 0.1); border-left: 4px solid #ef4444; border-radius: 4px; padding: 10px 14px; margin-bottom: 20px; font-size: 11px; color: #f87171; line-height: 1.5;">
+        ⚖️ <b>YASAL UYARI (SPK Duyurusu):</b> Burada yer alan yatırım bilgi, yorum ve tavsiyeleri <b>yatırım danışmanlığı kapsamında değildir.</b> Yatırım danışmanlığı hizmeti; aracı kurumlar, portföy yönetim şirketleri, mevduat kabul etmeyen bankalar ile müşteri arasında imzalanacak yatırım danışmanlığı sözleşmesi çerçevesinde sunulmaktadır. Burada yer alan yapay zeka modelleri ve algoritmalar tamamen deneysel olup, finansal kararlarınızın sorumluluğu tamamen kendinize aittir. <b>(YTD)</b>
+    </div>
 """, unsafe_allow_html=True)
 
 # ── SEKMELER ───────────────────────────────────────────────────────────────────
@@ -453,9 +461,15 @@ with tab1:
                             max_tokens=1024
                         )
                         reply = response.choices[0].message.content
-                        st.markdown(reply)
-                        st.session_state.messages.append({"role": "model", "content": reply})
-                        save_msg("model", reply)
+                        disclaimer_footer = (
+                            "\n\n---\n"
+                            "⚠️ **YASAL UYARI (YTD):** *Burada yer alan analiz ve algoritmik veriler tamamen eğitim amaçlı üretilmiş olup, "
+                            "kesinlikle yatırım danışmanlığı kapsamında değildir. Gerçekleşecek işlemlerden doğacak zararlardan kullanıcı sorumludur.*"
+                        )
+                        reply_with_footer = reply + disclaimer_footer
+                        st.markdown(reply_with_footer)
+                        st.session_state.messages.append({"role": "model", "content": reply_with_footer})
+                        save_msg("model", reply_with_footer)
 
                     except Exception as e:
                         st.error(f"Hata: {e}")
