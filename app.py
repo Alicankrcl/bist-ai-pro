@@ -325,10 +325,17 @@ with st.sidebar:
     st.markdown("🟢 AI Trade Asistanı Hazır")
 
     st.divider()
-    if st.button("Çıkış Yap / Sohbeti Temizle", use_container_width=True):
-        st.session_state.authenticated = False
-        st.session_state.username = None
-        st.rerun()
+    c_btn1, c_btn2 = st.columns(2)
+    with c_btn1:
+        if st.button("Sohbeti Temizle", use_container_width=True):
+            clear_msgs()
+            st.session_state.pop("messages", None)
+            st.rerun()
+    with c_btn2:
+        if st.button("Çıkış Yap", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.username = None
+            st.rerun()
 
 # ── BAŞLIK ─────────────────────────────────────────────────────────────────────
 st.markdown("""
