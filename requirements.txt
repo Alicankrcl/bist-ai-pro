@@ -3,3 +3,4 @@ groq
 yfinance
 pandas
 python-dotenv
+scikit-learn
