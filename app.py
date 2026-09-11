@@ -900,48 +900,96 @@ with tab2:
     """, unsafe_allow_html=True)
     st.caption(f"RSI · Momentum · PD/DD · F/K · Trend · Hacim — 10 üzerinden algoritmik puanlama  |  Havuz: {len(BIST_ALL)} hisse  |  24 saat önbellek")
 
-    # ── TEK HİSSE TARAMA (thread-safe) ───────────────────────────────────────
+    # ── TEK HİSSE TARAMA & QUANT PUANLAMA (thread-safe) ──────────────────────
     def _scan_single(sym: str) -> dict | None:
         d = fetch(sym)
         if "error" in d:
             return None
         score = 0.0
-        pv = d["pddd"]
-        if isinstance(pv, (int, float)):
-            if   pv < 1.0: score += 2.0
-            elif pv < 1.5: score += 1.5
-            elif pv < 2.5: score += 1.0
-            elif pv < 4.0: score += 0.5
+
+        # ── 1. F/K VE PD/DD MANTIK FİLTRESİ (TEMEL ANALİZ) ───────────────────
         fk = d["fk"]
-        if isinstance(fk, (int, float)) and fk > 0:
-            if   fk < 8:   score += 1.5
-            elif fk < 12:  score += 1.0
-            elif fk < 18:  score += 0.5
+        pv = d["pddd"]
+
+        # F/K Puanlaması (Zarar eden, geçersiz veya aşırı şişmişlere ceza)
+        if isinstance(fk, (int, float)) and not math.isnan(fk) and fk > 0:
+            if fk < 10:
+                score += 2.0
+            elif fk < 20:
+                score += 1.5
+            elif fk <= 35:
+                score += 0.8
+            elif fk > 50:
+                score -= 1.5   # Aşırı pahalı / balon cezası
+        else:
+            # F/K negatif (zararda), 0 veya nan ise doğrudan 0 puan (ceza/ödül yok)
+            pass
+
+        # PD/DD Puanlaması (0.5 - 3.0 arası makul ve yüksek puan, >10 ağır ceza)
+        if isinstance(pv, (int, float)) and not math.isnan(pv):
+            if 0.5 <= pv <= 1.5:
+                score += 2.0
+            elif 1.5 < pv <= 3.0:
+                score += 1.5
+            elif 3.0 < pv <= 5.0:
+                score += 0.5
+            elif pv > 10.0:
+                score -= 1.5   # Aşırı şişmiş defter değeri cezası
+
+        # ── 2. RSI VE MOMENTUM DENGELEMESİ (TEKNİK ANALİZ) ──────────────────
         rv = d["rsi"]
-        if isinstance(rv, (int, float)):
-            if   rv < 30:  score += 2.0
-            elif rv < 35:  score += 1.5
-            elif rv < 40:  score += 1.0
-            elif rv < 45:  score += 0.5
+        if isinstance(rv, (int, float)) and not math.isnan(rv):
+            if 45 <= rv <= 70:
+                score += 2.5   # Sağlıklı güçlü yükseliş trendi
+            elif 35 <= rv < 45:
+                score += 1.0   # Toparlanma bölgesi
+            elif rv > 80:
+                score -= 2.0   # Aşırı alım / tepe riski cezası
+            elif rv > 70:
+                score -= 0.5   # Şişkinlik başlangıcı
+            elif rv < 30:
+                # Aşırı satım: Sadece MACD dönüşü VEYA Hacim patlaması varsa tepki alımı puanı ver
+                has_macd_turn = d["macd"] > d["macd_sig"]
+                has_vol_turn = d["vol_surge"]
+                if has_macd_turn or has_vol_turn:
+                    score += 1.5  # Dönüş teyitli dip fırsatı
+                else:
+                    score -= 1.0  # Düşen bıçak cezası (teyitsiz dip)
+
+        # ── 3. TREND, MACD & HACİM TEYİDİ ───────────────────────────────────
+        if d["trend"] == "Yükseliş":
+            score += 1.5
+        else:
+            score -= 0.5
+
         if d["macd"] > d["macd_sig"]:
             score += 1.0
             if d["macd"] > 0:
                 score += 0.5
-        if d["trend"] == "Yükseliş":
-            score += 1.5
+
         if d["vol_surge"]:
             score += 1.0
+
+        # Bollinger pozisyonu (Alt banda yakın ve dip dönüşü)
         bb_range = d["upper_bb"] - d["lower_bb"]
         if bb_range > 0:
             bb_pos = (d["price"] - d["lower_bb"]) / bb_range
-            if bb_pos < 0.2:
+            if 0.1 <= bb_pos <= 0.35 and d["macd"] > d["macd_sig"]:
                 score += 0.5
-        score = min(round(score, 1), 10.0)
-        if   score >= 7.5: sinyal = "GÜÇLÜ FIRSAT"
-        elif score >= 5.5: sinyal = "FIRSAT"
-        elif score >= 3.5: sinyal = "NÖTR"
-        elif score >= 2.0: sinyal = "ZAYIF"
-        else:              sinyal = "KAÇIN"
+
+        # Puanı 0.0 - 10.0 arasına sabitle
+        score = max(0.0, min(round(score, 1), 10.0))
+
+        # ── 4. SİNYAL ETİKETLERİ ─────────────────────────────────────────────
+        if score >= 7.5:
+            sinyal = "GÜÇLÜ FIRSAT"
+        elif score >= 6.0:
+            sinyal = "FIRSAT"
+        elif score >= 4.5:
+            sinyal = "NÖTR"
+        else:
+            sinyal = "RİSKLİ / UZAK DUR"
+
         return {
             "Hisse": sym, "Fiyat": d["price"], "Değişim %": d["chg"],
             "RSI": d["rsi"], "MACD": d["macd"], "PD/DD": pv, "F/K": fk,
@@ -1042,8 +1090,8 @@ with tab2:
             min_puan = st.slider("Min. Puan", 0.0, 10.0, 0.0, 0.5, key="scr_puan")
         with fc2:
             sinyal_filtre = st.multiselect(
-                "Sinyal", ["GÜÇLÜ FIRSAT", "FIRSAT", "NÖTR", "ZAYIF", "KAÇIN"],
-                default=["GÜÇLÜ FIRSAT", "FIRSAT", "NÖTR", "ZAYIF", "KAÇIN"],
+                "Sinyal", ["GÜÇLÜ FIRSAT", "FIRSAT", "NÖTR", "RİSKLİ / UZAK DUR"],
+                default=["GÜÇLÜ FIRSAT", "FIRSAT", "NÖTR", "RİSKLİ / UZAK DUR"],
                 key="scr_sinyal"
             )
         with fc3:
@@ -1059,11 +1107,10 @@ with tab2:
         # ── HTML TABLO (st.components.v1.html ile render — asla bozulmaz) ────
         def _badge_html(s):
             cm = {
-                "GÜÇLÜ FIRSAT": ("#10b981", "rgba(16,185,129,.15)", "rgba(16,185,129,.4)"),
-                "FIRSAT":       ("#60a5fa", "rgba(59,130,246,.12)", "rgba(59,130,246,.3)"),
-                "NÖTR":         ("#94a3b8", "rgba(100,116,139,.12)", "rgba(100,116,139,.3)"),
-                "ZAYIF":        ("#fbbf24", "rgba(251,191,36,.12)", "rgba(251,191,36,.3)"),
-                "KAÇIN":        ("#ef4444", "rgba(239,68,68,.12)", "rgba(239,68,68,.3)"),
+                "GÜÇLÜ FIRSAT":       ("#10b981", "rgba(16,185,129,.15)", "rgba(16,185,129,.4)"),
+                "FIRSAT":             ("#60a5fa", "rgba(59,130,246,.12)", "rgba(59,130,246,.3)"),
+                "NÖTR":               ("#94a3b8", "rgba(100,116,139,.12)", "rgba(100,116,139,.3)"),
+                "RİSKLİ / UZAK DUR":  ("#ef4444", "rgba(239,68,68,.12)", "rgba(239,68,68,.3)"),
             }
             fg, bg, bd = cm.get(s, cm["NÖTR"])
             return f'<span style="background:{bg};color:{fg};border:1px solid {bd};padding:2px 10px;border-radius:12px;font-size:10px;font-weight:700;letter-spacing:.3px">{s}</span>'
