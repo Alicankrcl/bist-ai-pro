@@ -901,91 +901,96 @@ with tab2:
     st.caption(f"RSI · Momentum · PD/DD · F/K · Trend · Hacim — 10 üzerinden algoritmik puanlama  |  Havuz: {len(BIST_ALL)} hisse  |  24 saat önbellek")
 
     # ── TEK HİSSE TARAMA & QUANT PUANLAMA (thread-safe) ──────────────────────
+    # ── TEK HİSSE TARAMA & QUANT PUANLAMA (thread-safe) ──────────────────────
     def _scan_single(sym: str) -> dict | None:
         d = fetch(sym)
         if "error" in d:
             return None
-        score = 0.0
+            
+        score_fund = 0.0
+        score_tech = 0.0
+        score_trend = 0.0
 
-        # ── 1. F/K VE PD/DD MANTIK FİLTRESİ (TEMEL ANALİZ) ───────────────────
+        # ── 1. TEMEL ANALİZ (Maksimum 4 Puan: %40) ─────────────────────────────
         fk = d["fk"]
         pv = d["pddd"]
-
-        # F/K Puanlaması (Zarar eden, geçersiz veya aşırı şişmişlere ceza)
-        if isinstance(fk, (int, float)) and not math.isnan(fk) and fk > 0:
-            if fk < 10:
-                score += 2.0
-            elif fk < 20:
-                score += 1.5
-            elif fk <= 35:
-                score += 0.8
-            elif fk > 50:
-                score -= 1.5   # Aşırı pahalı / balon cezası
-        else:
-            # F/K negatif (zararda), 0 veya nan ise doğrudan 0 puan (ceza/ödül yok)
-            pass
-
-        # PD/DD Puanlaması (0.5 - 3.0 arası makul ve yüksek puan, >10 ağır ceza)
+        
+        is_fk_valid = isinstance(fk, (int, float)) and not math.isnan(fk)
+        
+        # PD/DD Puanlaması (Maks 2.0 Puan)
         if isinstance(pv, (int, float)) and not math.isnan(pv):
             if 0.5 <= pv <= 1.5:
-                score += 2.0
+                score_fund += 2.0
             elif 1.5 < pv <= 3.0:
-                score += 1.5
+                score_fund += 1.5
             elif 3.0 < pv <= 5.0:
-                score += 0.5
+                score_fund += 0.5
             elif pv > 10.0:
-                score -= 1.5   # Aşırı şişmiş defter değeri cezası
+                score_fund -= 1.0
 
-        # ── 2. RSI VE MOMENTUM DENGELEMESİ (TEKNİK ANALİZ) ──────────────────
+        # F/K Puanlaması (Maks 2.0 Puan)
+        if is_fk_valid and fk > 0:
+            if fk < 10:
+                score_fund += 2.0
+            elif fk <= 20:
+                score_fund += 1.5
+            elif fk <= 35:
+                score_fund += 0.5
+            elif fk > 50:
+                score_fund -= 1.0
+
+        # ── 2. TEKNİK ANALİZ - RSI & MOMENTUM (Maksimum 4 Puan: %40) ───────────
         rv = d["rsi"]
         if isinstance(rv, (int, float)) and not math.isnan(rv):
             if 45 <= rv <= 70:
-                score += 2.5   # Sağlıklı güçlü yükseliş trendi
+                score_tech += 4.0   # Sağlıklı güçlü yükseliş trendi
             elif 35 <= rv < 45:
-                score += 1.0   # Toparlanma bölgesi
+                score_tech += 2.0   # Toparlanma bölgesi
+            elif 30 <= rv < 35:
+                score_tech += 1.0
             elif rv > 80:
-                score -= 2.0   # Aşırı alım / tepe riski cezası
+                score_tech -= 2.0   # Aşırı alım / tepe riski
             elif rv > 70:
-                score -= 0.5   # Şişkinlik başlangıcı
+                score_tech -= 1.0   # Şişkinlik başlangıcı
             elif rv < 30:
-                # Aşırı satım: Sadece MACD dönüşü VEYA Hacim patlaması varsa tepki alımı puanı ver
-                has_macd_turn = d["macd"] > d["macd_sig"]
-                has_vol_turn = d["vol_surge"]
-                if has_macd_turn or has_vol_turn:
-                    score += 1.5  # Dönüş teyitli dip fırsatı
+                # Aşırı satım dönüşü
+                if d["macd"] > d["macd_sig"] or d["vol_surge"]:
+                    score_tech += 2.0  # Teyitli dip fırsatı
                 else:
-                    score -= 1.0  # Düşen bıçak cezası (teyitsiz dip)
+                    score_tech -= 1.0  # Düşen bıçak cezası
 
-        # ── 3. TREND, MACD & HACİM TEYİDİ ───────────────────────────────────
+        # ── 3. TREND, MACD & HACİM TEYİDİ (Maksimum 2 Puan: %20) ───────────────
         if d["trend"] == "Yükseliş":
-            score += 1.5
+            score_trend += 0.5
         else:
-            score -= 0.5
+            score_trend -= 0.5
 
         if d["macd"] > d["macd_sig"]:
-            score += 1.0
+            score_trend += 0.5
             if d["macd"] > 0:
-                score += 0.5
+                score_trend += 0.5
 
         if d["vol_surge"]:
-            score += 1.0
+            score_trend += 0.5
 
-        # Bollinger pozisyonu (Alt banda yakın ve dip dönüşü)
-        bb_range = d["upper_bb"] - d["lower_bb"]
-        if bb_range > 0:
-            bb_pos = (d["price"] - d["lower_bb"]) / bb_range
-            if 0.1 <= bb_pos <= 0.35 and d["macd"] > d["macd_sig"]:
-                score += 0.5
-
+        # Skorları birleştir
+        total_score = score_fund + score_tech + score_trend
+        
+        # ── KATI CEZA SİSTEMİ (HARD CAP) ───────────────────────────────────────
+        # F/K'sı geçersiz, negatif (zarar) veya >100 ise Puan 5.5'i GEÇEMEZ!
+        if not is_fk_valid or fk <= 0 or fk > 100:
+            if total_score > 5.5:
+                total_score = 5.5
+                
         # Puanı 0.0 - 10.0 arasına sabitle
-        score = max(0.0, min(round(score, 1), 10.0))
+        total_score = max(0.0, min(round(total_score, 1), 10.0))
 
-        # ── 4. SİNYAL ETİKETLERİ ─────────────────────────────────────────────
-        if score >= 7.5:
+        # ── SİNYAL ETİKETLERİ ─────────────────────────────────────────────
+        if total_score >= 7.5:
             sinyal = "GÜÇLÜ FIRSAT"
-        elif score >= 6.0:
+        elif total_score >= 6.0:
             sinyal = "FIRSAT"
-        elif score >= 4.5:
+        elif total_score >= 4.5:
             sinyal = "NÖTR"
         else:
             sinyal = "RİSKLİ / UZAK DUR"
@@ -995,7 +1000,7 @@ with tab2:
             "RSI": d["rsi"], "MACD": d["macd"], "PD/DD": pv, "F/K": fk,
             "Trend": d["trend"],
             "Hacim": "Yüksek" if d["vol_surge"] else "Normal",
-            "Puan": score, "Sinyal": sinyal,
+            "Puan": total_score, "Sinyal": sinyal,
         }
 
     # ── GÜNLÜK CACHE FONKSİYONU ──────────────────────────────────────────────
