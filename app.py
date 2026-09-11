@@ -271,14 +271,17 @@ def fetch(symbol: str) -> dict:
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_ml(symbol: str) -> dict:
     """ML tahminini önbellekte tutar (1 saat)"""
-    df = yf.download(f"{symbol.upper()}.IS", period="2y", progress=False)
-    if df.empty:
-        return {"error": "Veri yok"}
-        
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-        
-    return run_ml_prediction(df)
+    try:
+        df = yf.download(f"{symbol.upper()}.IS", period="2y", progress=False)
+        if df.empty:
+            return {"error": "Veri yok"}
+            
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+            
+        return run_ml_prediction(df)
+    except Exception as e:
+        return {"error": f"Veri hatası: {str(e)}"}
 
 # ── CSS (MODERN FİNANS TERMİNALİ) ────────────────────────────────────────────
 st.markdown("""
@@ -711,31 +714,36 @@ with tab1:
         with st.spinner("🧠 ML Modeli eğitiliyor ve tahmin üretiliyor..."):
             ml = get_ml(selected)
 
-        if ml.get("error"):
+        if ml and ml.get("error"):
             st.warning(f"ML Modeli: {ml['error']}")
-        else:
+        elif ml:
             sig_map = {
-                "GÜÇLÜ ALIŞ":  ("badge-strongbuy", "🟢 GÜÇLÜ ALIŞ"),
-                "ALIŞ":        ("badge-buy",        "🟢 ALIŞ"),
-                "NÖTR":        ("badge-neutral",    "⚪ NÖTR"),
-                "SATIŞ":       ("badge-sell",       "🔴 SATIŞ"),
-                "GÜÇLÜ SATIŞ": ("badge-strgsell",   "🔴 GÜÇLÜ SATIŞ"),
+                "BUY":  ("badge-strongbuy", "🟢 BUY"),
+                "NEUTRAL":        ("badge-neutral",    "⚪ NÖTR"),
+                "SELL":       ("badge-sell",       "🔴 SELL"),
             }
-            badge_cls, badge_txt = sig_map.get(ml["signal"], ("badge-neutral", ml["signal"]))
-            prob_color = "#10b981" if ml["prob_up"] >= 55 else ("#ef4444" if ml["prob_up"] <= 45 else "#f59e0b")
+            # Fallback for old signals if any
+            if ml.get("ml_signal") == "GÜÇLÜ ALIŞ" or ml.get("ml_signal") == "ALIŞ":
+                ml["ml_signal"] = "BUY"
+            if ml.get("ml_signal") == "GÜÇLÜ SATIŞ" or ml.get("ml_signal") == "SATIŞ":
+                ml["ml_signal"] = "SELL"
+                
+            badge_cls, badge_txt = sig_map.get(ml.get("ml_signal", "NEUTRAL"), ("badge-neutral", ml.get("ml_signal", "NEUTRAL")))
+            prob_up_val = ml.get("ml_up_prob", 50.0)
+            prob_color = "#10b981" if prob_up_val >= 55 else ("#ef4444" if prob_up_val <= 45 else "#f59e0b")
 
             ml_col1, ml_col2 = st.columns([2, 3])
             with ml_col1:
                 st.markdown(f"""
                 <div class="ml-card">
-                    <div class="ml-title">🧠 ML TAHMİN MODELİ (RandomForest {ml['n_trees']} ağaç)</div>
+                    <div class="ml-title">🧠 ML TAHMİN MODELİ (RandomForest {ml.get('n_trees', 300)} ağaç)</div>
                     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
                         <div>
-                            <div style="font-size:10px;color:#8b5cf6;margin-bottom:4px">YÜKSELİŞ OLASILĞI</div>
-                            <div class="ml-prob" style="color:{prob_color}">{ml['prob_up']}%</div>
+                            <div style="font-size:10px;color:#8b5cf6;margin-bottom:4px">YÜKSELİŞ OLASILIĞI</div>
+                            <div class="ml-prob" style="color:{prob_color}">{prob_up_val}%</div>
                         </div>
                         <div>
-                            <div style="font-size:10px;color:#4b5a7b;margin-bottom:4px">SINYAL</div>
+                            <div style="font-size:10px;color:#4b5a7b;margin-bottom:4px">SİNYAL</div>
                             <span class="ml-badge {badge_cls}">{badge_txt}</span>
                         </div>
                     </div>
@@ -743,12 +751,12 @@ with tab1:
             with ml_col2:
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    st.metric("Model Güven Skoru", f"{ml['confidence']}%",
+                    st.metric("Model Güven Skoru", f"{ml.get('ml_confidence', 50.0)}%",
                               help="Modelin en yüksek sınıfa verdiği olasılık")
-                    st.metric("CV Doğruluğu (Yaklaşık)", f"{ml['accuracy']}%",
+                    st.metric("CV Doğruluğu (Yaklaşık)", f"{ml.get('accuracy', 50.0)}%",
                               help="Zaman serisi çapraz doğrulama ortalama doğruluğu")
                 with col_b:
-                    st.metric("Düşüş Olasılığı", f"{ml['prob_down']}%")
+                    st.metric("Düşüş Olasılığı", f"{ml.get('ml_down_prob', 50.0)}%")
                     st.metric("Eğitim Periyodu", "2 yıl geçmiş veri")
 
         # ── AI TRADER CHAT ────────────────────────────────────────────────────────
@@ -945,88 +953,91 @@ with tab2:
 
     # ── TEK HİSSE TARAMA & QUANT PUANLAMA (thread-safe) ──────────────────────
     def _scan_single(sym: str) -> dict | None:
-        d = fetch(sym)
-        if "error" in d:
-            return None
-            
-        # Makine Öğrenmesi tahminlerini al
-        ml_data = run_ml_prediction(d["_df"])
-        
-        # ML verilerindeki olası hataları yönet
-        if "error" in ml_data and ml_data["error"]:
-            up_prob, down_prob, ml_signal, conf, cv_acc = 50.0, 50.0, "NEUTRAL", 50.0, 50.0
-        else:
-            up_prob = ml_data.get("prob_up", 50.0)
-            down_prob = ml_data.get("prob_down", 50.0)
-            ml_signal = ml_data.get("signal", "NEUTRAL")
-            if ml_signal == "GÜÇLÜ ALIŞ" or ml_signal == "ALIŞ": ml_signal = "BUY"
-            elif ml_signal == "GÜÇLÜ SATIŞ" or ml_signal == "SATIŞ": ml_signal = "SELL"
-            else: ml_signal = "NEUTRAL"
-            conf = ml_data.get("confidence", 50.0)
-            cv_acc = ml_data.get("accuracy", 50.0)
-
-        # Alt skorları hesapla
-        s_rsi = rsi_score(d.get("rsi"))
-        s_macd = macd_score(d.get("macd"), d.get("macd_sig"))
-        s_ema = ema_score(d.get("ema20"), d.get("ema50"))
-        s_bb = bollinger_score(d.get("price"), d.get("lower_bb"), d.get("upper_bb"))
-        s_vol = volume_score(d.get("vol_factor"))
-        s_ml_up = ml_up_score(up_prob)
-        s_ml_conf = ml_conf_score(conf)
-        s_sig = ml_signal_bonus(ml_signal)
-
-        # Composite Strength Score (CSS) -1.0 ile +1.0 arası
-        css = (
-            s_rsi * 0.15 +
-            s_macd * 0.20 +
-            s_ema * 0.10 +
-            s_bb * 0.10 +
-            s_vol * 0.10 +
-            s_ml_up * 0.15 +
-            s_ml_conf * 0.10 +
-            s_sig * 0.10
-        )
-
-        # 0-10 aralığına çevir
-        raw_score = (css * 5) + 5
-        
-        # ── KATI CEZA SİSTEMİ (HARD CAP) ───────────────────────────────────────
-        fk = d.get("fk")
-        is_fk_valid = isinstance(fk, (int, float)) and not math.isnan(fk)
-        
-        # F/K'sı geçersiz, negatif (zarar) veya >50 ise Puan 5.5'i GEÇEMEZ!
-        if not is_fk_valid or fk <= 0 or fk > 50:
-            final_score = min(raw_score, 5.5)
-        else:
-            final_score = raw_score
+        try:
+            d = fetch(sym)
+            if "error" in d:
+                return None
                 
-        # Puanı 0.0 - 10.0 arasına sabitle
-        final_score = max(0.0, min(round(final_score, 1), 10.0))
+            # Makine Öğrenmesi tahminlerini al
+            ml_data = run_ml_prediction(d["_df"])
+            
+            # ML verilerindeki olası hataları yönet
+            if not ml_data or ml_data.get("error"):
+                up_prob, down_prob, ml_signal, conf, cv_acc = 50.0, 50.0, "NEUTRAL", 50.0, 50.0
+            else:
+                up_prob = ml_data.get("ml_up_prob", 50.0)
+                down_prob = ml_data.get("ml_down_prob", 50.0)
+                ml_signal = ml_data.get("ml_signal", "NEUTRAL")
+                if ml_signal == "GÜÇLÜ ALIŞ" or ml_signal == "ALIŞ": ml_signal = "BUY"
+                elif ml_signal == "GÜÇLÜ SATIŞ" or ml_signal == "SATIŞ": ml_signal = "SELL"
+                # Varsayılan olarak NEUTRAL al
+                conf = ml_data.get("ml_confidence", 50.0)
+                cv_acc = ml_data.get("accuracy", 50.0)
 
-        # ── 4. SİNYAL ETİKETLERİ BÖLÜMÜ ─────────────────────────────────────────
-        if final_score >= 9.0:
-            sinyal = "GÜÇLÜ FIRSAT"
-        elif final_score >= 7.5:
-            sinyal = "FIRSAT"
-        elif final_score >= 6.0:
-            sinyal = "NÖTR"
-        else:
-            sinyal = "RİSKLİ / UZAK DUR"
+            # Alt skorları hesapla
+            s_rsi = rsi_score(d.get("rsi"))
+            s_macd = macd_score(d.get("macd"), d.get("macd_sig"))
+            s_ema = ema_score(d.get("ema20"), d.get("ema50"))
+            s_bb = bollinger_score(d.get("price"), d.get("lower_bb"), d.get("upper_bb"))
+            s_vol = volume_score(d.get("vol_factor"))
+            s_ml_up = ml_up_score(up_prob)
+            s_ml_conf = ml_conf_score(conf)
+            s_sig = ml_signal_bonus(ml_signal)
 
-        return {
-            "Hisse": sym, "Fiyat": d["price"], "Değişim %": d["chg"],
-            "RSI": d["rsi"], "MACD": d["macd"], "PD/DD": d.get("pddd"), "F/K": fk,
-            "Trend": d["trend"],
-            "Hacim": "Yüksek" if d["vol_surge"] else "Normal",
-            "Puan": final_score, "Sinyal": sinyal,
-        }
+            # Composite Strength Score (CSS) -1.0 ile +1.0 arası
+            css = (
+                s_rsi * 0.15 +
+                s_macd * 0.20 +
+                s_ema * 0.10 +
+                s_bb * 0.10 +
+                s_vol * 0.10 +
+                s_ml_up * 0.15 +
+                s_ml_conf * 0.10 +
+                s_sig * 0.10
+            )
+
+            # 0-10 aralığına çevir
+            raw_score = (css * 5) + 5
+            
+            # ── KATI CEZA SİSTEMİ (HARD CAP) ───────────────────────────────────────
+            fk = d.get("fk")
+            is_fk_valid = isinstance(fk, (int, float)) and not math.isnan(fk)
+            
+            # F/K'sı geçersiz, negatif (zarar) veya >50 ise Puan 5.5'i GEÇEMEZ!
+            if not is_fk_valid or fk <= 0 or fk > 50:
+                final_score = min(raw_score, 5.5)
+            else:
+                final_score = raw_score
+                    
+            # Puanı 0.0 - 10.0 arasına sabitle
+            final_score = max(0.0, min(round(final_score, 1), 10.0))
+
+            # ── 4. SİNYAL ETİKETLERİ BÖLÜMÜ ─────────────────────────────────────────
+            if final_score >= 9.0:
+                sinyal = "GÜÇLÜ FIRSAT"
+            elif final_score >= 7.5:
+                sinyal = "FIRSAT"
+            elif final_score >= 6.0:
+                sinyal = "NÖTR"
+            else:
+                sinyal = "RİSKLİ / UZAK DUR"
+
+            return {
+                "Hisse": sym, "Fiyat": d["price"], "Değişim %": d["chg"],
+                "RSI": d["rsi"], "MACD": d["macd"], "PD/DD": d.get("pddd"), "F/K": fk,
+                "Trend": d["trend"],
+                "Hacim": "Yüksek" if d["vol_surge"] else "Normal",
+                "Puan": final_score, "Sinyal": sinyal,
+            }
+        except Exception:
+            return None
 
     # ── GÜNLÜK CACHE FONKSİYONU ──────────────────────────────────────────────
     @st.cache_data(ttl=86400, show_spinner=False)
     def run_full_scan(symbol_list: tuple) -> pd.DataFrame:
         """Tüm BIST havuzunu paralel tarar, 24 saat önbellekte tutar."""
         results = []
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             future_map = {executor.submit(_scan_single, s): s for s in symbol_list}
             for future in as_completed(future_map):
                 try:
@@ -1055,8 +1066,9 @@ with tab2:
         st.session_state.pop("screener_df", None)
 
     # ── TARAMAYI ÇALIŞTIR (cache varsa anında gelir) ─────────────────────────
-    if do_scan or "screener_df" not in st.session_state:
-        with st.spinner(f"{len(BIST_ALL)} hisse paralel taranıyor..."):
+    # Sadece butona basıldığında taramayı başlat (Başlangıç kilitlenmesini önler)
+    if do_scan:
+        with st.spinner(f"{len(BIST_ALL)} hisse paralel taranıyor... Lütfen bekleyin (1-2 Dk)"):
             df_scan = run_full_scan(tuple(BIST_ALL))
         if not df_scan.empty:
             st.session_state.screener_df = df_scan
@@ -1070,11 +1082,12 @@ with tab2:
         avg_chg       = round(df["Değişim %"].mean(), 2)
         bullish_count = len(df[df["Trend"] == "Yükseliş"])
         bearish_count = total_scanned - bullish_count
-        top_opps      = len(df[df["Puan"] >= 5.5])
+        top_opps      = len(df[df["Puan"] >= 6.0])
         avg_rsi       = round(df["RSI"].mean(), 1)
 
         mkt_color = "#10b981" if avg_chg >= 0 else "#ef4444"
         mkt_text  = "Pozitif" if avg_chg >= 0 else "Negatif"
+        sign = "+" if avg_chg >= 0 else ""
 
         st.markdown(f"""
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin:16px 0">
@@ -1084,24 +1097,24 @@ with tab2:
             </div>
             <div class="kart {'green-glow' if avg_chg>=0 else 'red-glow'}" style="flex:1;min-width:130px">
                 <div class="kart-label">Ort. Değişim</div>
-                <div class="kart-val" style="color:{mkt_color}">{'+'if avg_chg>=0 else ''}{avg_chg}%</div>
+                <div class="kart-val" style="color:{mkt_color}">{sign}{avg_chg}%</div>
                 <div style="font-size:10px;color:#64748b;margin-top:4px">Piyasa: {mkt_text}</div>
             </div>
             <div class="kart" style="flex:1;min-width:130px">
                 <div class="kart-label">Yükseliş / Düşüş</div>
                 <div class="kart-val" style="font-size:17px">
                     <span style="color:#10b981">{bullish_count}</span>
-                    <span style="color:#334155;padding:0 4px">/</span>
+                    <span style="color:#4b5a7b">/</span>
                     <span style="color:#ef4444">{bearish_count}</span>
                 </div>
             </div>
-            <div class="kart green-glow" style="flex:1;min-width:130px">
-                <div class="kart-label">Fırsat (≥5.5)</div>
-                <div class="kart-val green">{top_opps}</div>
+            <div class="kart" style="flex:1;min-width:130px">
+                <div class="kart-label">Güçlü Fırsatlar</div>
+                <div class="kart-val" style="color:#8b5cf6">{top_opps}</div>
             </div>
             <div class="kart" style="flex:1;min-width:130px">
-                <div class="kart-label">Ort. RSI</div>
-                <div class="kart-val amber">{avg_rsi}</div>
+                <div class="kart-label">Piyasa Ort. RSI</div>
+                <div class="kart-val" style="color:#f59e0b">{avg_rsi}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
