@@ -271,10 +271,13 @@ def fetch(symbol: str) -> dict:
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_ml(symbol: str) -> dict:
     """ML tahminini önbellekte tutar (1 saat)"""
-    tk = yf.Ticker(f"{symbol.upper()}.IS")
-    df = tk.history(period="2y")
+    df = yf.download(f"{symbol.upper()}.IS", period="2y", progress=False)
     if df.empty:
         return {"error": "Veri yok"}
+        
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(1)
+        
     return run_ml_prediction(df)
 
 # ── CSS (MODERN FİNANS TERMİNALİ) ────────────────────────────────────────────

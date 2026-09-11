@@ -70,10 +70,10 @@ def run_ml_prediction(df: pd.DataFrame) -> dict:
     Zaman serisi sızıntısını önleyen katı test/eğitim ayrımına sahiptir.
     """
     neutral_dict = {
-        'prob_up': 50.0,
-        'prob_down': 50.0,
-        'signal': 'NEUTRAL',
-        'confidence': 50.0,
+        'ml_up_prob': 50.0,
+        'ml_down_prob': 50.0,
+        'ml_signal': 'NEUTRAL',
+        'ml_confidence': 50.0,
         'n_trees': 300,
         'accuracy': 50.0,
         'error': 'Yetersiz veri veya model hatası'
@@ -158,10 +158,10 @@ def run_ml_prediction(df: pd.DataFrame) -> dict:
             signal = 'NEUTRAL'
 
         return {
-            'prob_up':    prob_up,
-            'prob_down':  prob_down,
-            'signal':     signal,
-            'confidence': confidence,
+            'ml_up_prob':    prob_up,
+            'ml_down_prob':  prob_down,
+            'ml_signal':     signal,
+            'ml_confidence': confidence,
             'n_trees':    300,
             'accuracy':   round(cv_accuracy * 100, 1),
             'error':      None,
