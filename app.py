@@ -258,6 +258,7 @@ def fetch(symbol: str) -> dict:
             "support":    round(support, 2),
             "resistance": round(resistance, 2),
             "vol_surge":  vol_surge,
+            "vol_factor": round(vol_curr / vol_ma20, 2) if vol_ma20 > 0 else 1.0,
             "pred_high":  round(pred_high, 2),
             "pred_low":   round(pred_low, 2),
             "fk":         round(fk,   2) if isinstance(fk,   (int, float)) else None,
@@ -900,107 +901,121 @@ with tab2:
     """, unsafe_allow_html=True)
     st.caption(f"RSI · Momentum · PD/DD · F/K · Trend · Hacim — 10 üzerinden algoritmik puanlama  |  Havuz: {len(BIST_ALL)} hisse  |  24 saat önbellek")
 
-    # ── TEK HİSSE TARAMA & QUANT PUANLAMA (thread-safe) ──────────────────────
+    def rsi_score(rsi):
+        if pd.isna(rsi): return 0.0
+        if rsi >= 70: return -1.0
+        if rsi <= 55: return 0.0
+        return (rsi - 55) / (70 - 55)
+
+    def macd_score(macd, signal):
+        if pd.isna(macd) or pd.isna(signal): return 0.0
+        diff = macd - signal
+        return max(min(diff / 2.0, 1.0), -1.0)
+
+    def ema_score(ema20, ema50):
+        if pd.isna(ema20) or pd.isna(ema50): return 0.0
+        return 1.0 if ema20 > ema50 else -1.0
+
+    def bollinger_score(price, lower, upper):
+        if pd.isna(price) or pd.isna(lower) or pd.isna(upper) or upper == lower: return 0.0
+        pos = (price - lower) / (upper - lower)
+        if pos <= 0.2: return 1.0
+        if pos >= 0.8: return -1.0
+        return 0.0
+
+    def volume_score(vol_factor):
+        if pd.isna(vol_factor): return 0.0
+        return min(max((vol_factor - 1.0) / (3.0 - 1.0), 0.0), 1.0)
+
+    def ml_up_score(up_prob):
+        if pd.isna(up_prob): return 0.0
+        return up_prob / 100.0
+
+    def ml_conf_score(conf):
+        if pd.isna(conf): return 0.0
+        return conf / 100.0
+
+    def ml_signal_bonus(signal):
+        if signal == "BUY": return 0.10
+        if signal == "SELL": return -0.10
+        return 0.0
+
     # ── TEK HİSSE TARAMA & QUANT PUANLAMA (thread-safe) ──────────────────────
     def _scan_single(sym: str) -> dict | None:
         d = fetch(sym)
         if "error" in d:
             return None
             
-        score_fund = 0.0
-        score_tech = 0.0
-        score_trend = 0.0
-
-        # ── 1. TEMEL ANALİZ (Maksimum 4 Puan: %40) ─────────────────────────────
-        fk = d["fk"]
-        pv = d["pddd"]
+        # Makine Öğrenmesi tahminlerini al
+        ml_data = run_ml_prediction(d["_df"])
         
-        is_fk_valid = isinstance(fk, (int, float)) and not math.isnan(fk)
-        
-        # PD/DD Puanlaması (Maks 2.0 Puan)
-        if isinstance(pv, (int, float)) and not math.isnan(pv):
-            if 0.5 <= pv <= 1.5:
-                score_fund += 2.0
-            elif 1.5 < pv <= 3.0:
-                score_fund += 1.5
-            elif 3.0 < pv <= 5.0:
-                score_fund += 0.5
-            elif pv > 10.0:
-                score_fund -= 1.0
-
-        # F/K Puanlaması (Maks 2.0 Puan)
-        if is_fk_valid and fk > 0:
-            if fk < 10:
-                score_fund += 2.0
-            elif fk <= 20:
-                score_fund += 1.5
-            elif fk <= 35:
-                score_fund += 0.5
-            elif fk > 50:
-                score_fund -= 1.0
-
-        # ── 2. TEKNİK ANALİZ - RSI & MOMENTUM (Maksimum 4 Puan: %40) ───────────
-        rv = d["rsi"]
-        if isinstance(rv, (int, float)) and not math.isnan(rv):
-            if 45 <= rv <= 70:
-                score_tech += 4.0   # Sağlıklı güçlü yükseliş trendi
-            elif 35 <= rv < 45:
-                score_tech += 2.0   # Toparlanma bölgesi
-            elif 30 <= rv < 35:
-                score_tech += 1.0
-            elif rv > 80:
-                score_tech -= 2.0   # Aşırı alım / tepe riski
-            elif rv > 70:
-                score_tech -= 1.0   # Şişkinlik başlangıcı
-            elif rv < 30:
-                # Aşırı satım dönüşü
-                if d["macd"] > d["macd_sig"] or d["vol_surge"]:
-                    score_tech += 2.0  # Teyitli dip fırsatı
-                else:
-                    score_tech -= 1.0  # Düşen bıçak cezası
-
-        # ── 3. TREND, MACD & HACİM TEYİDİ (Maksimum 2 Puan: %20) ───────────────
-        if d["trend"] == "Yükseliş":
-            score_trend += 0.5
+        # ML verilerindeki olası hataları yönet
+        if "error" in ml_data and ml_data["error"]:
+            up_prob, down_prob, ml_signal, conf, cv_acc = 50.0, 50.0, "NEUTRAL", 50.0, 50.0
         else:
-            score_trend -= 0.5
+            up_prob = ml_data.get("prob_up", 50.0)
+            down_prob = ml_data.get("prob_down", 50.0)
+            ml_signal = ml_data.get("signal", "NEUTRAL")
+            if ml_signal == "GÜÇLÜ ALIŞ" or ml_signal == "ALIŞ": ml_signal = "BUY"
+            elif ml_signal == "GÜÇLÜ SATIŞ" or ml_signal == "SATIŞ": ml_signal = "SELL"
+            else: ml_signal = "NEUTRAL"
+            conf = ml_data.get("confidence", 50.0)
+            cv_acc = ml_data.get("accuracy", 50.0)
 
-        if d["macd"] > d["macd_sig"]:
-            score_trend += 0.5
-            if d["macd"] > 0:
-                score_trend += 0.5
+        # Alt skorları hesapla
+        s_rsi = rsi_score(d.get("rsi"))
+        s_macd = macd_score(d.get("macd"), d.get("macd_sig"))
+        s_ema = ema_score(d.get("ema20"), d.get("ema50"))
+        s_bb = bollinger_score(d.get("price"), d.get("lower_bb"), d.get("upper_bb"))
+        s_vol = volume_score(d.get("vol_factor"))
+        s_ml_up = ml_up_score(up_prob)
+        s_ml_conf = ml_conf_score(conf)
+        s_sig = ml_signal_bonus(ml_signal)
 
-        if d["vol_surge"]:
-            score_trend += 0.5
+        # Composite Strength Score (CSS) -1.0 ile +1.0 arası
+        css = (
+            s_rsi * 0.15 +
+            s_macd * 0.20 +
+            s_ema * 0.10 +
+            s_bb * 0.10 +
+            s_vol * 0.10 +
+            s_ml_up * 0.15 +
+            s_ml_conf * 0.10 +
+            s_sig * 0.10
+        )
 
-        # Skorları birleştir
-        total_score = score_fund + score_tech + score_trend
+        # 0-10 aralığına çevir
+        raw_score = (css * 5) + 5
         
         # ── KATI CEZA SİSTEMİ (HARD CAP) ───────────────────────────────────────
-        # F/K'sı geçersiz, negatif (zarar) veya >100 ise Puan 5.5'i GEÇEMEZ!
-        if not is_fk_valid or fk <= 0 or fk > 100:
-            if total_score > 5.5:
-                total_score = 5.5
+        fk = d.get("fk")
+        is_fk_valid = isinstance(fk, (int, float)) and not math.isnan(fk)
+        
+        # F/K'sı geçersiz, negatif (zarar) veya >50 ise Puan 5.5'i GEÇEMEZ!
+        if not is_fk_valid or fk <= 0 or fk > 50:
+            final_score = min(raw_score, 5.5)
+        else:
+            final_score = raw_score
                 
         # Puanı 0.0 - 10.0 arasına sabitle
-        total_score = max(0.0, min(round(total_score, 1), 10.0))
+        final_score = max(0.0, min(round(final_score, 1), 10.0))
 
-        # ── SİNYAL ETİKETLERİ ─────────────────────────────────────────────
-        if total_score >= 7.5:
+        # ── 4. SİNYAL ETİKETLERİ BÖLÜMÜ ─────────────────────────────────────────
+        if final_score >= 9.0:
             sinyal = "GÜÇLÜ FIRSAT"
-        elif total_score >= 6.0:
+        elif final_score >= 7.5:
             sinyal = "FIRSAT"
-        elif total_score >= 4.5:
+        elif final_score >= 6.0:
             sinyal = "NÖTR"
         else:
             sinyal = "RİSKLİ / UZAK DUR"
 
         return {
             "Hisse": sym, "Fiyat": d["price"], "Değişim %": d["chg"],
-            "RSI": d["rsi"], "MACD": d["macd"], "PD/DD": pv, "F/K": fk,
+            "RSI": d["rsi"], "MACD": d["macd"], "PD/DD": d.get("pddd"), "F/K": fk,
             "Trend": d["trend"],
             "Hacim": "Yüksek" if d["vol_surge"] else "Normal",
-            "Puan": total_score, "Sinyal": sinyal,
+            "Puan": final_score, "Sinyal": sinyal,
         }
 
     # ── GÜNLÜK CACHE FONKSİYONU ──────────────────────────────────────────────
