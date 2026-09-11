@@ -41,7 +41,8 @@ if "authenticated" not in st.session_state:
 if not st.session_state.authenticated:
     st.markdown("""
     <style>
-    #MainMenu,footer,header{visibility:hidden}
+    #MainMenu,footer{visibility:hidden}
+    [data-testid="stSidebarCollapsedControl"]{visibility:visible !important; display:flex !important;}
     html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{background:#060810!important;color:white}
     </style>""", unsafe_allow_html=True)
     st.markdown("<h2 style='text-align:center;margin-top:100px;color:#fff'>⚡ AI Quant Pro — Giriş</h2>", unsafe_allow_html=True)
@@ -279,7 +280,16 @@ def get_ml(symbol: str) -> dict:
 st.markdown("""
 <style>
 /* ── GENEL ────────────────────────────────────────────────────── */
-#MainMenu,footer,header{visibility:hidden}
+#MainMenu,footer{visibility:hidden}
+[data-testid="stSidebarCollapsedControl"]{
+    visibility:visible !important;
+    display:flex !important;
+    z-index:99999 !important;
+}
+header[data-testid="stHeader"]{
+    background:transparent !important;
+    color:#e2e8f0 !important;
+}
 
 html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{
     background:#060810 !important;
